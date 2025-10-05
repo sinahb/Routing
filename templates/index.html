@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>آزادی‌ناو</title>
+    <link rel="manifest" href="/static/manifest.json">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * { font-family: Tahoma, Arial, sans-serif; }
+        body { margin: 0; padding: 10px; background: #f5f5f5; }
+        h1 { text-align: center; color: #e74c3c; font-size: 1.4em; margin-bottom: 10px; }
+        #map { height: 65vh; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.2); }
+        #controls {
+            text-align: center;
+            margin-top: 10px;
+        }
+        #start-btn, #nav-btn {
+            background: #2ecc71;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            font-size: 1.1em;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: bold;
+            margin: 5px;
+        }
+        #nav-btn { background: #3498db; display: none; }
+        #status {
+            margin-top: 8px;
+            font-size: 0.95em;
+            color: #555;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <h1>🧭 آزادی‌ناو</h1>
+    <div id="map"></div>
+    <div id="controls">
+        <button id="start-btn">شروع — موقعیت من را بگیر</button>
+        <br>
+        <button id="nav-btn">فعال‌سازی ناوبری زنده</button>
+    </div>
+    <div id="status">برای شروع، دکمه بالا را فشار دهید.</div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- کتابخانه برای پیدا کردن نزدیک‌ترین نقطه روی خط -->
+    <script src="https://cdn.jsdelivr.net/npm/leaflet.geometryutil@0.9.3/dist/leaflet.geometryutil.min.js"></script>
+    <script>
+        const AZADI = [35.6972, 51.3378];
+        let map = L.map('map').setView([35.6892, 51.3890], 12);
+        let userMarker = null;
+        let fullRouteGeoJSON = null; // مسیر کامل از OSRM
+        let traversedLayer = null;   // بخش طی‌شده
+        let remainingLayer = null;   // بخش باقی‌مانده
+        let isNavigating = false;
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+        }).addTo(map);
+
+        L.marker(AZADI, {
+            icon: L.divIcon({
+                className: '',
+                html: '<div style="background:#e74c3c;color:white;font-weight:bold;text-align:center;border-radius:50%;width:32px;height:32px;line-height:32px;font-size:16px;">آ</div>',
+                iconSize: [32, 32]
+            })
+        }).addTo(map).bindPopup('<b>برج آزادی</b>');
+
+        // تقسیم مسیر به دو بخش
+        function splitRouteAtNearestPoint(userLatLng) {
+            if (!fullRouteGeoJSON) return;
+
+            const line = fullRouteGeoJSON.geometry.coordinates.map(coord => L.latLng(coord[1], coord[0]));
+            const nearest = L.GeometryUtil.closest(map, line, userLatLng);
+            const nearestIndex = line.findIndex(p => p.equals(nearest));
+
+            if (nearestIndex === -1) return;
+
+            // بخش طی‌شده: از ابتدا تا نزدیک‌ترین نقطه
+            const traversedCoords = line.slice(0, nearestIndex + 1).map(p => [p.lng, p.lat]);
+            // بخش باقی‌مانده: از نزدیک‌ترین نقطه تا انتها
+            const remainingCoords = line.slice(nearestIndex).map(p => [p.lng, p.lat]);
+
+            // حذف لایه‌های قبلی
+            if (traversedLayer) map.removeLayer(traversedLayer);
+            if (remainingLayer) map.removeLayer(remainingLayer);
+
+            // رسم بخش طی‌شده (خاکستری)
+            if (traversedCoords.length > 1) {
+                traversedLayer = L.polyline(traversedCoords, {
+                    color: '#95a5a6',
+                    weight: 6,
+                    opacity: 0.7
+                }).addTo(map);
+            }
+
+            // رسم بخش باقی‌مانده (آبی)
+            if (remainingCoords.length > 1) {
+                remainingLayer = L.polyline(remainingCoords, {
+                    color: '#3498db',
+                    weight: 6,
+                    opacity: 0.9
+                }).addTo(map);
+            }
+        }
+
+        async function fetchRoute(start, end) {
+            const url = `https://router.project-osrm.org/route/v1/driving/${start[1]},${start[0]};${end[1]},${end[0]}?overview=full&geometries=geojson`;
+            try {
+                const res = await fetch(url);
+                const data = await res.json();
+                if (data.routes?.length > 0) {
+                    fullRouteGeoJSON = data.routes[0].geometry;
+                    // اولین بار: کل مسیر آبی
+                    if (remainingLayer) map.removeLayer(remainingLayer);
+                    remainingLayer = L.geoJSON(fullRouteGeoJSON, {
+                        style: { color: '#3498db', weight: 6, opacity: 0.9 }
+                    }).addTo(map);
+                    document.getElementById('nav-btn').style.display = 'inline-block';
+                    document.getElementById('status').innerText = "مسیر آماده است. برای ناوبری زنده، دکمه را فشار دهید.";
+                }
+            } catch (err) {
+                console.error(err);
+                document.getElementById('status').innerText = "خطا در دریافت مسیر.";
+            }
+        }
+
+        function updateUserOnMap(lat, lng) {
+            const userLatLng = L.latLng(lat, lng);
+            if (userMarker) map.removeLayer(userMarker);
+            userMarker = L.marker(userLatLng, {
+                icon: L.divIcon({
+                    className: '',
+                    html: '<div style="font-size:36px;">📍</div>',
+                    iconSize: [40, 40],
+                    iconAnchor: [20, 40]
+                })
+            }).addTo(map).bindPopup('موقعیت شما');
+
+            if (isNavigating) {
+                map.setView(userLatLng, 18);
+                splitRouteAtNearestPoint(userLatLng); // به‌روزرسانی مسیر طی‌شده
+            } else {
+                map.setView(userLatLng, 15);
+                fetchRoute([lat, lng], AZADI);
+            }
+        }
+
+        // دکمه شروع
+        document.getElementById('start-btn').addEventListener('click', () => {
+            if (!navigator.geolocation) {
+                document.getElementById('status').innerText = "مرورگر شما از GPS پشتیبانی نمی‌کند.";
+                return;
+            }
+            document.getElementById('status').innerText = "در حال دریافت موقعیت...";
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                    const { latitude, longitude } = pos.coords;
+                    updateUserOnMap(latitude, longitude);
+                    document.getElementById('start-btn').style.display = 'none';
+                },
+                (err) => {
+                    let msg = "خطا در GPS: ";
+                    if (err.code === 1) msg += "دسترسی رد شد.";
+                    else if (err.code === 2) msg += "موقعیت یافت نشد.";
+                    else if (err.code === 3) msg += "مهلت تمام شد.";
+                    else msg += "خطای ناشناخته.";
+                    document.getElementById('status').innerText = msg;
+                },
+                { enableHighAccuracy: true, timeout: 15000 }
+            );
+        });
+
+        // دکمه ناوبری زنده
+        document.getElementById('nav-btn').addEventListener('click', () => {
+            isNavigating = true;
+            document.getElementById('nav-btn').disabled = true;
+            document.getElementById('nav-btn').innerText = "ناوبری فعال است...";
+            document.getElementById('status').innerText = "ناوبری زنده فعال شد.";
+
+            if (navigator.geolocation && userMarker) {
+                navigator.geolocation.watchPosition(
+                    (pos) => {
+                        const { latitude, longitude } = pos.coords;
+                        updateUserOnMap(latitude, longitude);
+                    },
+                    (err) => console.warn("ردیابی مداوم خطا داد:", err),
+                    { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
+                );
+            }
+        });
+
+        // PWA
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/static/sw.js').catch(console.error);
+            });
+        }
+    </script>
+</body>
+</html>
